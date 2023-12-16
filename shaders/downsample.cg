@@ -1,0 +1,51 @@
+// Downsample shaders for reducing render target resolution
+//
+// Author: Simon Green
+// Email: sdkfeedback@nvidia.com
+//
+// Copyright (c) NVIDIA Corporation. All rights reserved.
+
+// downsample image by factor of 2 in each dimension using bilinear filtering
+void downsample_vp(float4 position : POSITION,
+                   float2 texcoord : TEXCOORD0,
+                   out float2 o_texcoord : TEXCOORD0,
+                   out float4 o_hpos : POSITION,
+                   uniform float4x4 modelViewProj : state.matrix.mvp
+                   )
+{
+    o_texcoord = texcoord;
+    o_hpos = mul(modelViewProj, position);
+}
+
+half4 downsample_fp(float2 texcoord0 : TEXCOORD0,
+	                uniform sampler2D sceneTex
+                    ) : COLOR
+{
+    return tex2D(sceneTex, texcoord0);
+}
+
+// downsample image by factor of 4 in each dimension
+void downsample4_vp(float4 position : POSITION,
+                    float2 texcoord : TEXCOORD0,
+                    out float2 o_texcoord[4] : TEXCOORD0,
+                    out float4 o_hpos : POSITION,
+                    uniform float4x4 modelViewProj : state.matrix.mvp,
+                    uniform float2 twoTexelSize
+                    )
+{
+    o_texcoord[0] = texcoord;
+    o_texcoord[1] = texcoord + float2(twoTexelSize.x, 0);
+    o_texcoord[2] = texcoord + float2(twoTexelSize.x, twoTexelSize.y);
+    o_texcoord[3] = texcoord + float2(0, twoTexelSize.y);
+    o_hpos = mul(modelViewProj, position);
+}
+
+half4 downsample4_fp(float2 texcoord[4] : TEXCOORD0,
+	                uniform sampler2D sceneTex
+                    ) : COLOR
+{
+    return (tex2D(sceneTex, texcoord[0]) + 
+            tex2D(sceneTex, texcoord[1]) +
+            tex2D(sceneTex, texcoord[2]) +
+            tex2D(sceneTex, texcoord[3])) * 0.25;
+}

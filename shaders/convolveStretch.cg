@@ -1,0 +1,62 @@
+
+
+
+void convolveStretch_vp(float4 position		: POSITION,
+                  float2 texcoord			: TEXCOORD0,
+                  out float2 o_texcoord		: TEXCOORD0,
+                  out float4 o_hpos			: POSITION,
+                  uniform float4x4 modelViewProj : state.matrix.mvp
+                 )
+{
+    o_texcoord = texcoord;
+    o_hpos = mul(modelViewProj, position);
+}
+
+float4 convolveStretchU_fp(float2 texCoord		: TEXCOORD0,
+				    uniform float GaussWidth,
+	                uniform sampler2D inputTex	: TEXUNIT0
+                   ) : COLOR
+{
+    float scaleConv = 1.0 / 1024.0;
+	float4 stretch = f4tex2D(inputTex, texCoord);
+	float netFilterWidth = scaleConv * GaussWidth * stretch.x;
+	
+	// Gaussian curve - standard deviation of 1.0
+	float curve[7] = {0.006, 0.061, 0.242, 0.383, 0.242, 0.061, 0.006};
+
+	float2 coords = texCoord - float2(netFilterWidth * 3.0, 0.0);
+	float4 sum = 0;
+	for (int i=0; i<7; i++)
+	{
+		float4 tap = f4tex2D(inputTex, coords);
+		sum += curve[i] * tap;
+		coords += float2(netFilterWidth, 0.0);
+	}
+	
+	return sum;
+}
+
+float4 convolveStretchV_fp(float2 texCoord		: TEXCOORD0,
+				    uniform float GaussWidth,
+	                uniform sampler2D inputTex	: TEXUNIT0
+                   ) : COLOR
+{
+    float scaleConv = 1.0 / 1024.0;
+	float4 stretch = f4tex2D(inputTex, texCoord);
+	float netFilterWidth = scaleConv * GaussWidth * stretch.y;
+	
+	// Gaussian curve - standard deviation of 1.0
+	float curve[7] = {0.006, 0.061, 0.242, 0.383, 0.242, 0.061, 0.006};
+
+	float2 coords = texCoord - float2(0.0, netFilterWidth * 3.0);
+	float4 sum = 0;
+	for (int i=0; i<7; i++)
+	{
+		float4 tap = f4tex2D(inputTex, coords);
+		sum += curve[i] * tap;
+		coords += float2(0.0, netFilterWidth);
+	}
+	
+	return sum;
+}
+

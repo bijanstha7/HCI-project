@@ -1,0 +1,65 @@
+
+//==============================================================================
+float3 vecMul(float4x4 m, float3 v) {
+  return float3(dot(m._11_12_13, v), dot(m._21_22_23, v), dot(m._31_32_33, v));
+}
+
+// application to vertex shader
+struct a2v 
+{
+    float4 Position		: POSITION;
+    float3 Normal		: NORMAL;
+	float2 TexCoord		: TEXCOORD0;
+};
+
+// vertex shader to fragment shader
+struct v2f 
+{
+    float4 P	: POSITION;		// position
+	float3 N	: TEXCOORD0;	// normal
+    float2 T	: TEXCOORD1;	// tex coord
+	float3 L	: TEXCOORD2;	// light dir
+};
+
+float4 v2t(float2 texCoord){
+  return float4( texCoord.x * 2.0 - 1.0, texCoord.y * 2.0 - 1.0, 0.0, 1.0 );    
+};
+
+v2f object_vp(a2v In,
+              uniform float4x4 model	// app specific model view matrix
+              )
+{
+    v2f Out;
+
+    // transform position to world space
+    float4 P = mul(model, In.Position);
+
+    // transform normal to world space
+    float3 N = mul((float3x3) model, In.Normal.xyz);
+
+    Out.N = normalize(N);
+    Out.T = In.TexCoord;
+	Out.P = mul(glstate.matrix.mvp, P);
+	Out.L = mul((float3x3) model, glstate.light[0].position.xyz);
+	
+	return Out;
+}
+
+float4 object_fp(v2f In, 
+				uniform sampler2D imgMap    : TEXUNIT0,
+				uniform sampler2D normalTex	: TEXUNIT1,
+				uniform float4x4 model
+                ) : COLOR
+{
+    //float3 n = normalize(In.N);
+	
+	float3 objNormal = f3tex2D( normalTex, In.T ) * float3( 2.0, 2.0, 2.0 ) - float3( 1.0, 1.0, 1.0 );
+	float3 n = normalize( vecMul( model, objNormal ) );
+
+	float intensity = max(dot(normalize(In.L), n), 0.2);
+
+	float3 texel = tex2D(imgMap, In.T).rgb;
+	float3 Cout = intensity * texel;
+
+    return float4(Cout, 1.0);
+}

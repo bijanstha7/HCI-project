@@ -1,0 +1,52 @@
+
+// application to vertex shader
+struct a2v 
+{
+    float4 Position		: POSITION;
+    float3 Normal		: NORMAL;
+	float2 TexCoord		: TEXCOORD0;
+};
+
+// vertex shader to fragment shader
+struct v2f 
+{
+	float4 P	: POSITION;
+	float3 worldCoord	: TEXCOORD0;
+};
+
+float4 v2t(float2 texCoord){
+  return float4( texCoord.x * 2.0 - 1.0, texCoord.y * 2.0 - 1.0, 0.0, 1.0);    
+};
+
+float2 computeStretchMap( float3 worldCoord, float scale )
+{
+	float3 derivu = ddx(worldCoord);
+	float3 derivv = ddy(worldCoord);
+	//float stretchU = 1.0 / length(derivu);
+	//float stretchV = 1.0 / length(derivv);
+	float stretchU = scale / length(derivu);
+	float stretchV = scale / length(derivv);
+	return float2 (stretchU, stretchV);		// two component texture color
+};
+
+v2f stretch_vp(a2v In,
+              uniform float4x4 model	// app specific model view matrix
+			  )
+{
+    v2f Out;
+    
+	// transform position to world space
+    float4 P = mul(model, In.Position);
+
+	Out.P = v2t(In.TexCoord);
+	Out.worldCoord = float3(P.xyz);
+
+	return Out;
+}
+
+float4 stretch_fp(v2f In,
+				  uniform float scale) : COLOR
+{
+	float2 outColor = computeStretchMap(In.worldCoord, scale);
+    return float4(outColor.xy, 0.0, 1.0);
+}

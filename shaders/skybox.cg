@@ -1,0 +1,23 @@
+// skybox shaders
+//
+// Author: Simon Green
+// Email: sdkfeedback@nvidia.com
+//
+// Copyright (c) NVIDIA Corporation. All rights reserved.
+
+void skybox_vp(float4 position : POSITION,
+               out float3 o_texcoord : TEXCOORD0,
+               out float4 o_hpos : POSITION,
+               uniform float4x4 view : state.matrix.modelview,
+               uniform float4x4 proj : state.matrix.projection
+               )
+{
+    o_texcoord = mul((float3x3) view, position.xyz);
+    o_hpos = mul(proj, position);
+}
+
+half4 skybox_fp(float3 texcoord0 : TEXCOORD0,
+                uniform samplerCUBE envMap) : COLOR
+{
+    return texCUBE(envMap, texcoord0);
+}

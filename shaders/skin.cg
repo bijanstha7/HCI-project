@@ -1,0 +1,287 @@
+//==============================================================================
+// Three layer SSS skin shader - Eugene d'Eon, January 2007 (c) NVIDIA Corporation
+// Modified by Sangyoon Lee (sjames@evl.uic.edi) for CS525 class project
+// 2008.11.18
+//==============================================================================
+
+
+// Utility Functions
+//==============================================================================
+float3 vecMul(float4x4 m, float3 v) {
+  return float3(dot(m._11_12_13, v), dot(m._21_22_23, v), dot(m._31_32_33, v));
+}
+
+//==============================================================================
+float shadow4( texobj2D shadowTex, float4 coord, float bias, float spread )
+{  
+  float2 center = coord.xy;
+  float depth = coord.z + bias;
+  float theW = coord.w;
+
+  float4 texCoord = float4(coord.xy, depth, theW);    
+ 
+  float total = f1texcompare2D( shadowTex, texCoord );
+  return total;
+}
+
+//==============================================================================
+float3 conductorFresnel( float costhetai, float3 eta, float3 k )
+{
+	float3 squares = eta * eta + k * k;
+	float  costis = costhetai * costhetai;
+	float3 rperptop = squares * costis - 2.0 * eta * costhetai + 1.0;
+	float3 rperpbot = squares * costis + 2.0 * eta * costhetai + 1.0;	
+	float3 rperp = rperptop / rperpbot;
+	
+	float3 rparatop = squares - 2.0 * eta * costhetai + costis;
+	float3 rparabot = squares + 2.0 * eta * costhetai + costis;	
+	float3 rpara = rparatop / rparabot;
+	return 0.5 * ( rperp * rperp + rpara * rpara );
+}
+
+//==============================================================================
+float term1( float cosnh, float m )
+{
+	float alpha = acos( cosnh );
+	float ta = tan( alpha );
+	float pH = 1.0 / ( m * m * pow( cosnh, 4.0 ) ) * exp( -( ta * ta ) / ( m * m ) );
+	
+	return pH;
+}
+
+//==============================================================================
+float term2( float coseh, float F0 )
+{
+	coseh = 1.0f - coseh;
+	coseh = pow( coseh, 5.0 );
+	float Ff = coseh + ( 1.0f - coseh ) * F0;
+	
+	return Ff;
+}
+
+//==============================================================================
+// Shader Data Connector
+//==============================================================================
+struct a2vConnector
+{
+    float4 objCoord		: ATTR0;
+    float3 objNormal	: ATTR1;
+    float2 c_texCoord	: ATTR2;
+};
+
+struct v2fConnector {
+  float4 projCoord				: POSITION;		
+  float3 worldCoord             : TEXCOORD0;		
+  float3 worldNormal            : TEXCOORD1;		
+  float2 c_texCoord             : TEXCOORD4;		
+  float4 winTargetDepthCoord    : TEXCOORD2;		
+};
+
+
+//==============================================================================
+// Vertex Program
+//==============================================================================
+v2fConnector skin_vp(a2vConnector a2v,
+                  uniform float4x4 viewProj,
+                  uniform float4x4 viewProjWin_Target,
+                  uniform float4x4 model)
+{
+    v2fConnector v2f;
+
+    float4x4 modelSkin = model;
+    float4 objCoord = a2v.objCoord;
+    float4 worldCoord = mul(modelSkin, objCoord);
+    float4 projCoord = mul(viewProj, worldCoord);
+    float3 tempObjNormal = a2v.objNormal;
+    float3 objNormal = normalize(tempObjNormal);
+    float3 worldNormal = vecMul(modelSkin, objNormal);
+    float4 winTargetDepthCoord = mul(viewProjWin_Target, worldCoord);
+
+    v2f.projCoord = projCoord;
+    v2f.worldCoord = worldCoord;
+    v2f.worldNormal = worldNormal;
+    v2f.c_texCoord = a2v.c_texCoord;
+    v2f.winTargetDepthCoord = winTargetDepthCoord;
+
+    return v2f;
+}
+
+
+//==============================================================================
+// Fragment Program
+//==============================================================================
+float4 skin_fp(
+
+	    // shader params
+	    uniform float3 s_PointLightColor,
+	    uniform float3 s_worldPointLightPos,
+	    uniform float3 s_worldEyePos,
+	    uniform float  s_diffColMix,
+	    uniform float3 s_specularColor,
+	    uniform float  s_shadowBias,
+	    uniform float  s_shadowSpread,
+	    uniform float  s_pointLiteAmount,
+	    uniform float3 s_DiffuseColorTweak,
+	    uniform float  s_DiffuseColorBrightness,
+	    uniform float3 s_nonBlur,					// RGB nonBlur weight
+	    uniform float3 s_blur2,						// RGB Gaussian weight that define skin profile (figure 14.13)
+	    uniform float3 s_blur4,						// RGB Gaussian weight that define skin profile (figure 14.13)
+	    uniform float3 s_blur8,						// RGB Gaussian weight that define skin profile (figure 14.13)
+	    uniform float3 s_blur16,					// RGB Gaussian weight that define skin profile (figure 14.13)
+	    uniform float3 s_blur32,					// RGB Gaussian weight that define skin profile (figure 14.13)
+	    uniform float  s_gamma,
+	    uniform float  s_specAmount,
+	    uniform float  s_albedoGamma,
+	    uniform float  s_albedoLerp,
+	    uniform float  s_envAmount,
+	    uniform float  s_totalBrightness,
+	    uniform float  s_chromeAmount,
+	    uniform float  s_chromeBumpiness,
+
+	    // textures
+	    uniform sampler2D   albedoTex	: TEXUNIT0,			// diffuse texture (nonBlur)
+	    uniform sampler2D   specTex		: TEXUNIT1, 		// spec amount in r, g, b, and roughness value over the surface
+	    uniform sampler2D   normalTex	: TEXUNIT2,			// normal texture
+	    uniform sampler2D   shadowTex	: TEXUNIT3,			// shadow texture 0
+	    uniform sampler2D   blur2Tex	: TEXUNIT4,			// blur 0
+	    uniform sampler2D   blur4Tex	: TEXUNIT5,			// blur 1
+	    uniform sampler2D   blur8Tex	: TEXUNIT6,			// blur 2
+	    uniform sampler2D   blur16Tex	: TEXUNIT7,			// blur 3
+	    uniform sampler2D   blur32Tex	: TEXUNIT8,			// blur 4
+	    uniform sampler2D   rho_d_Tex	: TEXUNIT9, 		// Torrance-Sparrow BRDF integrated over hemisphere for range of roughness and incident angles
+	    uniform samplerCUBE envDiffCube	: TEXUNIT10,		// diffuse cube map
+	    uniform samplerCUBE envCube		: TEXUNIT11,		// 
+	    
+	    uniform float4x4   model, 							// needed to transform obj space normal map into world space
+
+	    v2fConnector v2f
+	    ) : COLOR {
+
+  // lighting parameters
+  float3 L = normalize( s_worldPointLightPos - v2f.worldCoord ); // point light 0 light vector
+  float standardShadowTap_L = shadow4( shadowTex, v2f.winTargetDepthCoord, -3.0, s_shadowSpread );
+  
+  float Latten = 600 * 600 / dot( s_worldPointLightPos - v2f.worldCoord, s_worldPointLightPos - v2f.worldCoord); 
+
+  float LShadow = standardShadowTap_L;
+     
+  // smooth normal
+  float3 NS = normalize( v2f.worldNormal );
+	  
+  // normalTex is a 4k x 4k objSpaceNormal map
+  float3 objNormal = f3tex2D( normalTex, v2f.c_texCoord.xy ) * float3( 2.0, 2.0, 2.0 ) - float3( 1.0, 1.0, 1.0 );
+		
+  // compute the bumped normal in world space
+  float3 worldNormal = normalize( vecMul( model, objNormal ) );
+  float3 N = worldNormal;
+  
+  float bumpDot_L = dot( N, L );
+
+  float nonBumpDot_L = dot( NS, L );
+  
+  // compute light color
+  float3 pointLightColor = s_PointLightColor * LShadow * s_pointLiteAmount * Latten;
+
+  // compute view vector
+  float3 worldEyeVec = normalize( v2f.worldCoord - s_worldEyePos );
+  float3 V = -worldEyeVec;  
+    
+  float3 R_bumped = ( reflect( V, N ) );
+  float3 R = reflect( V, NS );
+  
+  float3 reflectnormal = s_chromeBumpiness * N + ( 1 - s_chromeBumpiness ) * NS;
+  float3 R_blended = reflect( V, reflectnormal );
+  
+  float4 specTap = f4tex2D( specTex, v2f.c_texCoord.xy ); // specular amount in R, G, B, and roughness
+  float surface_roughness = specTap.w * 0.09 + 0.23;
+  float rho_s = specTap.x * 0.16 + 0.18;
+  
+  rho_s *= float( specTap.x > 0.1 );
+    
+  // DIFFUSE LIGHT  
+  float3 Li1cosi = saturate( bumpDot_L ) * pointLightColor;
+
+  float3 rho_dt_L = 1.0 - rho_s * f1tex2D( rho_d_Tex, float2( bumpDot_L, surface_roughness ) );
+  
+  rho_dt_L = 1.0;
+
+  float3 E1 = Li1cosi * rho_dt_L;
+    
+  float4 albedoTap = f4tex2D( albedoTex, v2f.c_texCoord.xy );
+  float3 albedo = pow( albedoTap.xyz, s_albedoGamma );
+  
+  float occlusion = albedoTap.w;
+  
+  float3 cubeTap1 = pow( f3texCUBE( envDiffCube, N ).xyz, 1.0 );
+  float3 cubeTap2 = f3texCUBE( envCube, -R_blended );
+  cubeTap2 = min( cubeTap2 * cubeTap2, 800.0 );				// gamma (pow freaks out) with clamp on the sun value
+  
+  float ndotv = saturate( dot( NS, V ) );
+ 
+  // silicon
+  float3 eta = float3( 3.964, 4.127, 4.862 );
+  float3 k = float3( .01282, 0.1365, .1271 );  
+  
+  cubeTap2 *= conductorFresnel( ndotv, eta, k );
+  
+  // start mixing the diffuse lighting - re-compute non-blurred lighting per pixel to get maximum resolutions
+  float3 diffuseLight = s_nonBlur * pow( albedo.xyz, s_diffColMix ) * (E1);
+  diffuseLight.xyz += s_nonBlur * s_envAmount * cubeTap1.xyz * occlusion;
+    
+  // now add in the blurred lighting in different proportions for R, G, and B    
+  float4 blur2tap  = f4tex2D( blur2Tex, v2f.c_texCoord.xy );
+  float4 blur4tap  = f4tex2D( blur4Tex, v2f.c_texCoord.xy );
+  float4 blur8tap  = f4tex2D( blur8Tex, v2f.c_texCoord.xy );
+  float4 blur16tap = f4tex2D( blur16Tex, v2f.c_texCoord.xy );
+  float4 blur32tap = f4tex2D( blur32Tex, v2f.c_texCoord.xy );
+  
+  diffuseLight += s_blur2 * blur2tap.xyz;		// Gaussian Blur 1
+  diffuseLight += s_blur4 * blur4tap.xyz;		// Gaussian Blur 2
+  diffuseLight += s_blur8 * blur8tap.xyz;		// Gaussian Blur 3
+  diffuseLight += s_blur16 * blur16tap.xyz;		// Gaussian Blur 4
+  diffuseLight += s_blur32 * blur32tap.xyz;		// Gaussian Blur 5
+  
+  // renormalize R, G, and B so that the total mix of light is 1.0 in each channel
+  float3 norm2 = s_nonBlur + s_blur2 + s_blur4 + s_blur8 + s_blur16 + s_blur32;
+  diffuseLight /= norm2;  
+  
+  diffuseLight *= pow( float3( 141.0 / 255.0, 97.0 / 255.0, 70.0 / 255.0 ), 2.2 ) * lerp( albedo.xyz / s_specularColor, 1.0, s_albedoLerp );
+  
+  // final coloring and brightening of the diffuse lighting
+  diffuseLight *= s_DiffuseColorTweak * s_DiffuseColorBrightness;  
+  
+  // outgoing scale to finish the BSSRDF formula: still need a 1/pi Fdt(wo) term.
+  float finalScale = 1.0 / 3.141592653589793238 * ( 1.0 - 0 * rho_s * f1tex2D( rho_d_Tex, float2( dot( N, V ), surface_roughness ) ) );
+      
+  // ACCUMULATE FINAL MIX OF LIGHTING  
+  float3 finalLight = float3( 0, 0, 0 );
+  finalLight.xyz += diffuseLight * finalScale * 1;  
+  
+  if( bumpDot_L > 0.0f )
+  {
+	  float3 h1 = L + V; // un normalized half-way vector
+		float3 H1 = normalize( h1 );
+		float cosnh1 = dot( H1, N );
+		float pH1 = pow( 2.0 * f3tex2D( rho_d_Tex, float2( cosnh1, surface_roughness ) ).y, 10.0 );
+		float coseh1 = dot( H1, V );
+		float Ff1 = f3tex2D( rho_d_Tex, float2( coseh1, 0.02777778 ) ).z;
+		Ff1 = term2( coseh1, 0.02777778 );
+		
+		float specularCoefficient1 = max( pH1 * Ff1 / dot( h1, h1 ), 0 );
+		float spec1 = bumpDot_L * rho_s * specularCoefficient1;
+		
+	  finalLight.xyz += s_specAmount * pointLightColor * spec1;
+	}
+  
+  finalLight.xyz = lerp( finalLight.xyz * s_totalBrightness * 3.14159265, s_totalBrightness * cubeTap2 * 0.226, s_chromeAmount );
+  float3 outputColor = finalLight.xyz;
+    
+  float3 brighten = finalLight.xyz * s_totalBrightness * 3.14159265;
+    
+  if( v2f.c_texCoord.y < -0.05 )
+  {  	
+  	outputColor.xyz = 0;
+  }   
+  
+  return float4( max( float3( 0, 0, 0 ),outputColor.xyz ) , 1.0 );
+}

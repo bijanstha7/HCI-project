@@ -1,0 +1,220 @@
+
+//==============================================================================
+float3 vecMul(float4x4 m, float3 v) {
+  return float3(dot(m._11_12_13, v), dot(m._21_22_23, v), dot(m._31_32_33, v));
+}
+
+//==============================================================================
+float term2( float coseh, float F0 )
+{
+	coseh = 1.0f - coseh;
+	coseh = pow( coseh, 5.0 );
+	float Ff = coseh + ( 1.0f - coseh ) * F0;
+	
+	return Ff;
+}
+
+//==============================================================================
+float KS_Skin_Specular( float3 N,	// Bumped surface normal
+					    float3 L,	// Points to light
+						float3 V,	// Points to eye
+						float m,	// Roughness
+						float rho_s, // Specular brightness
+						uniform sampler2D beckmannTex )
+{
+	float result = 0.0;
+	float ndotl = dot(N, L);
+
+	if (ndotl > 0.0)
+	{
+		float3 h = L + V;	// Unnormalized half-way vector
+		float3 H = normalize(h);
+		float ndoth = dot(N, H);
+		float PH = pow(2.0*f3tex2D(beckmannTex, float2(ndoth,m)).y, 10.0);
+		float coseh1 = dot( H, V );
+		float F = term2( coseh1, 0.02777778 );
+		float frSpec = max (PH * F / dot(h, h), 0);
+		result = ndotl * rho_s * frSpec;	// BRDF * dot(N,L) * rho_s
+	}
+	return result;
+}
+
+//==============================================================================
+// Shader Data Connector
+//==============================================================================
+struct a2vConnector
+{
+    float4 objCoord		: POSITION;
+    float3 objNormal	: NORMAL;
+    float2 c_texCoord	: TEXCOORD0;
+};
+
+struct v2fConnector {
+  float4 projCoord				: POSITION;		
+  float3 worldCoord             : TEXCOORD0;		
+  float3 worldNormal            : TEXCOORD1;		
+  float2 c_texCoord             : TEXCOORD2;	
+  float4 TSM_coord				: TEXCOORD3;
+};
+
+//==============================================================================
+// Vertex Program
+//==============================================================================
+v2fConnector final_vp(a2vConnector a2v,
+                  uniform float4x4 viewProj,
+                  uniform float4x4 viewProjWin_Target,
+                  uniform float4x4 model)
+{
+    v2fConnector v2f;
+
+    float4x4 modelSkin = model;
+    float4 objCoord = a2v.objCoord;
+    float4 worldCoord = mul(modelSkin, objCoord);
+    float4 projCoord = mul(viewProj, worldCoord);
+    float3 tempObjNormal = a2v.objNormal;
+    float3 objNormal = normalize(tempObjNormal);
+    float3 worldNormal = vecMul(modelSkin, objNormal);
+    float4 winTargetDepthCoord = mul(viewProjWin_Target, worldCoord);
+
+    v2f.projCoord = projCoord;
+    v2f.worldCoord = worldCoord;
+    v2f.worldNormal = worldNormal;
+    v2f.c_texCoord = a2v.c_texCoord;
+	v2f.TSM_coord = winTargetDepthCoord;
+
+    return v2f;
+}
+
+
+//==============================================================================
+// Fragment Program
+//==============================================================================
+float4 final_fp(v2fConnector v2f,
+
+			   uniform float3 s_worldPointLightPos,
+			   uniform float3 s_worldEyePos,
+			   uniform float  s_diffColMix,
+
+			   // Shadow map coords for the modified TSM
+			   //float4 TSM_coord	: TEXCOORD2,
+
+			   // Lighting colors
+			   uniform float3 lightColor,
+			   uniform float3 lightShadow,
+
+			   // RGB Gaussian weights that define skin profile
+			   uniform float3 gauss1w,
+			   uniform float3 gauss2w,
+			   uniform float3 gauss3w,
+			   uniform float3 gauss4w,
+			   uniform float3 gauss5w,
+			   uniform float3 gauss6w,
+
+			   // Blurred irradiance texture
+			   uniform sampler2D irrad1Tex			: TEXUNIT0,
+			   uniform sampler2D irrad2Tex			: TEXUNIT1,
+			   uniform sampler2D irrad3Tex			: TEXUNIT2,
+			   uniform sampler2D irrad4Tex			: TEXUNIT3,
+			   uniform sampler2D irrad5Tex			: TEXUNIT4,
+			   uniform sampler2D irrad6Tex			: TEXUNIT5,
+
+			   uniform sampler2D normalTex			: TEXUNIT6,
+			   uniform sampler2D TSMTex				: TEXUNIT7,
+			   uniform sampler2D rhodTex			: TEXUNIT8,			// x: rho_s, y: beckmannTex, z: fresnelReflectance
+			   uniform sampler2D stretch32Tex		: TEXUNIT9,
+			   uniform sampler2D diffuseColorTex	: TEXUNIT10,
+			   uniform sampler2D specTex			: TEXUNIT11,			// 10 regions for rho_s and roughness. two component 
+																			// rho_s = x * 0.16 + 0.18
+																			// m = w * 0.09 + 0.23
+			   uniform float4x4   model 									// needed to transform obj space normal map into world space
+				): COLOR
+{
+	float2 texCoord = v2f.c_texCoord;
+
+	// Points to Light
+	float3 L = normalize( s_worldPointLightPos - v2f.worldCoord ); // point light 0 light vector
+
+	// View vector
+	float3 V = normalize( s_worldEyePos - v2f.worldCoord );
+
+	// Bumped surface normal
+	float3 objNormal = f3tex2D( normalTex, texCoord.xy ) * float3( 2.0, 2.0, 2.0 ) - float3( 1.0, 1.0, 1.0 );
+	float3 N = normalize( vecMul( model, objNormal ) );
+
+	// The total diffuse light exiting the surface
+	float3 diffuseLight = 0;
+
+	float4 irrad1tap = f4tex2D( irrad1Tex, texCoord);
+	float4 irrad2tap = f4tex2D( irrad2Tex, texCoord);
+	float4 irrad3tap = f4tex2D( irrad3Tex, texCoord);
+	float4 irrad4tap = f4tex2D( irrad4Tex, texCoord);
+	float4 irrad5tap = f4tex2D( irrad5Tex, texCoord);
+	float4 irrad6tap = f4tex2D( irrad6Tex, texCoord);
+
+	diffuseLight += gauss1w * irrad1tap.xyz;
+	diffuseLight += gauss2w * irrad2tap.xyz;
+	diffuseLight += gauss3w * irrad3tap.xyz;
+	diffuseLight += gauss4w * irrad4tap.xyz;
+	diffuseLight += gauss5w * irrad5tap.xyz;
+	diffuseLight += gauss6w * irrad6tap.xyz;
+
+	// Renormalize diffusion profile to white
+	float3 normConst = gauss1w + gauss2w + gauss3w + gauss4w + gauss5w + gauss6w;
+	diffuseLight /= normConst;
+
+	// Compute global scatter from modified TSM
+	// TSMtap = (distance to light, u, v)
+	float3 TSMtap = f3tex2D(TSMTex, v2f.TSM_coord.xy / v2f.TSM_coord.w);
+
+	// Four average thicknesses through the object (in mm)
+	float4 thickness_mm = 1.0 * -(1.0 / 0.2) *
+						log(float4( irrad2tap.w, irrad3tap.w,
+									irrad4tap.w, irrad5tap.w ));
+
+	float2 stretchTap = f2tex2D( stretch32Tex, texCoord );
+	float stretchval = 0.5 * (stretchTap.x + stretchTap.y);
+
+	float4 a_values = float4(0.433, 0.753, 1.412, 2.722);
+	float4 inv_a = -1.0 / (2.0 * a_values * a_values );
+	float4 fades = exp( thickness_mm * thickness_mm * inv_a);
+
+	float textureScale = 1024.0 * 0.1 / stretchval;
+	float blendFactor4 = saturate(textureScale *
+								  length(texCoord.xy - TSMtap.yz) /
+								  (a_values.y * 0.6));
+	float blendFactor5 = saturate(textureScale *
+								  length(texCoord.xy - TSMtap.yz) /
+								  (a_values.z * 0.6));
+	float blendFactor6 = saturate(textureScale *
+								  length(texCoord.xy - TSMtap.yz) /
+								  (a_values.w * 0.6));
+
+	diffuseLight += gauss4w / normConst * fades.y * blendFactor4 *
+					f3tex2D( irrad4Tex, TSMtap.yz ).xyz;
+	diffuseLight += gauss5w / normConst * fades.z * blendFactor5 *
+					f3tex2D( irrad5Tex, TSMtap.yz ).xyz;
+	diffuseLight += gauss6w / normConst * fades.w * blendFactor6 *
+					f3tex2D( irrad6Tex, TSMtap.yz ).xyz;
+
+	// Determine skin color from a diffuseColor map
+	diffuseLight *= pow(f3tex2D(diffuseColorTex, texCoord), 1.0 - s_diffColMix);
+
+	// Constant for specular calculation
+	float4 specTap = f4tex2D( specTex, texCoord.xy ); // rho_s and roughness
+	float m = specTap.w * 0.09 + 0.23;						// m is specular roughness
+	float rho_s = specTap.x * 0.16 + 0.18;
+	rho_s *= float( specTap.x > 0.1 );
+
+	// Energy conservation (optional) - rho_s and m can be painted
+	float finalScale = 1 - rho_s * f1tex2D(rhodTex, float2(dot(N, V), m));
+	diffuseLight *= finalScale;
+
+	// Compute specular for each light
+	float3 specularLight = 0;
+	specularLight += lightColor * lightShadow *
+					 KS_Skin_Specular(N, L, V, m, rho_s, rhodTex );
+
+	return float4(diffuseLight + specularLight, 1.0);
+}
+
+

@@ -1,0 +1,56 @@
+
+
+float3 vecMul(float4x4 m, float3 v) {
+  return float3(dot(m._11_12_13, v), dot(m._21_22_23, v), dot(m._31_32_33, v));
+}
+
+struct a2vConnector
+{
+    float4 objCoord		: ATTR0;
+    float3 objNormal	: ATTR1;
+    float2 c_texCoord	: ATTR2;
+};
+
+struct v2gConnector
+{
+    float4 projCoord						: POSITION;
+    float3 worldCoord						: TEX0;
+    float3 worldNormal					: TEX1;
+    float2 c_texCoord						: TEX4;
+    float4 winTargetDepthCoord	: TEX2;
+};
+
+struct s_shaderParams0
+{
+    float4x4 viewProj;
+    float4x4 viewProjWin_Target;
+};
+
+struct shapeParams0
+{
+    float4x4 model;
+};
+
+v2gConnector main(a2vConnector a2v,
+                  uniform s_shaderParams0 s_shaderParams,
+                  uniform shapeParams0 shapeParams)
+{
+    v2gConnector v2g;
+
+    float4x4 modelSkin = shapeParams.model;
+    float4 objCoord = a2v.objCoord;
+    float4 worldCoord = mul(modelSkin, objCoord);
+    float4 projCoord = mul(s_shaderParams.viewProj, worldCoord);
+    float3 tempObjNormal = a2v.objNormal;
+    float3 objNormal = normalize(tempObjNormal);
+    float3 worldNormal = vecMul(modelSkin, objNormal);
+    float4 winTargetDepthCoord = mul(s_shaderParams.viewProjWin_Target, worldCoord);
+
+    v2g.projCoord = projCoord;
+    v2g.worldCoord = worldCoord;
+    v2g.worldNormal = worldNormal;
+    v2g.c_texCoord = a2v.c_texCoord;
+    v2g.winTargetDepthCoord = winTargetDepthCoord;
+
+    return v2g;
+}
